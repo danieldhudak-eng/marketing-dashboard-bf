@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { createClient } from '@supabase/supabase-js';
-import { RefreshCw, LayoutDashboard, Settings, Grid, Copy, Check, BarChart2, Share, Lock } from 'lucide-react';
+import { RefreshCw, LayoutDashboard, Settings, Grid, Copy, Check, BarChart2, Share, Lock, Download } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
+import * as XLSX from 'xlsx';
 
 const formatNumber = (num) => {
     if (num === null || num === undefined) return '0';
@@ -249,6 +250,95 @@ const App = () => {
      });
   };
 
+  const exportToExcel = () => {
+      if (posts.length === 0) {
+          alert('No data to export. Load data first.');
+          return;
+      }
+
+      const wb = XLSX.utils.book_new();
+
+      // --- Sheet 1: Summary ---
+      const summaryRows = [
+          ['Marketing Dashboard Report'],
+          ['Account', account === 'bf' ? 'Body & Future' : 'RIO'],
+          ['Date Range', `${dateFrom} → ${dateTo}`],
+          ['Campaign Filter', campaignFilter || '(none)'],
+          ['Generated', new Date().toLocaleString()],
+          [],
+          ['Metric', 'Value'],
+          ['Amount Spent (€)', Number(kpis.spend.toFixed(2))],
+          ['Impressions', kpis.impressions],
+          ['Total Reach', kpis.reach],
+          ['Engagements', kpis.engagements],
+          ['Link Clicks', kpis.linkClicks],
+          ['ThruPlays', kpis.thruPlays],
+          ['Follows / Likes', kpis.followers],
+          ['Total Posts', posts.length],
+      ];
+      const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
+      summarySheet['!cols'] = [{ wch: 22 }, { wch: 30 }];
+      XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
+
+      // --- Sheet 2: Posts ---
+      const postRows = posts.map(p => ({
+          Network: p.network === 'ig' ? 'Instagram' : 'Facebook',
+          Category: tags[p.id] || 'Uncategorized',
+          Month: p.monthLabel,
+          Text: p.text,
+          'Spend (€)': Number(p.metrics.spend.toFixed(2)),
+          Impressions: p.metrics.impressions,
+          Reach: p.metrics.reach,
+          Engagements: p.metrics.engagements,
+          Clicks: p.metrics.clicks,
+          ThruPlays: p.metrics.thruPlays,
+          Followers: p.metrics.followers,
+          'Image URL': p.imageUrl,
+      }));
+      const postsSheet = XLSX.utils.json_to_sheet(postRows);
+      postsSheet['!cols'] = [
+          { wch: 11 }, { wch: 18 }, { wch: 11 }, { wch: 60 },
+          { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 },
+          { wch: 9 }, { wch: 10 }, { wch: 10 }, { wch: 50 },
+      ];
+      XLSX.utils.book_append_sheet(wb, postsSheet, 'Posts');
+
+      // --- Sheet 3: Monthly Breakdown ---
+      const monthlyRows = uniqueMonthKeys.map(mk => {
+          const monthPosts = posts.filter(p => p.monthKey === mk);
+          const sums = monthPosts.reduce((acc, p) => ({
+              spend: acc.spend + p.metrics.spend,
+              impressions: acc.impressions + p.metrics.impressions,
+              reach: acc.reach + p.metrics.reach,
+              engagements: acc.engagements + p.metrics.engagements,
+              clicks: acc.clicks + p.metrics.clicks,
+              thruPlays: acc.thruPlays + p.metrics.thruPlays,
+              followers: acc.followers + p.metrics.followers,
+          }), { spend: 0, impressions: 0, reach: 0, engagements: 0, clicks: 0, thruPlays: 0, followers: 0 });
+          return {
+              Month: monthPosts[0]?.monthLabel || mk,
+              'Posts': monthPosts.length,
+              'Spend (€)': Number(sums.spend.toFixed(2)),
+              Impressions: sums.impressions,
+              Reach: sums.reach,
+              Engagements: sums.engagements,
+              Clicks: sums.clicks,
+              ThruPlays: sums.thruPlays,
+              Followers: sums.followers,
+          };
+      });
+      const monthlySheet = XLSX.utils.json_to_sheet(monthlyRows);
+      monthlySheet['!cols'] = [
+          { wch: 14 }, { wch: 8 }, { wch: 11 }, { wch: 12 },
+          { wch: 10 }, { wch: 12 }, { wch: 9 }, { wch: 10 }, { wch: 10 },
+      ];
+      XLSX.utils.book_append_sheet(wb, monthlySheet, 'Monthly Breakdown');
+
+      const accountTag = account === 'bf' ? 'bf' : 'rio';
+      const filename = `${accountTag}-marketing-report_${dateFrom}_to_${dateTo}.xlsx`;
+      XLSX.writeFile(wb, filename);
+  };
+
   const generateShareLink = () => {
       const payloadObj = {
           apiKeys, viewMode, account, dateFrom, dateTo, selectedMetrics, chartType
@@ -342,6 +432,7 @@ const App = () => {
           <span style={{ color: 'var(--text-secondary)' }}>to</span>
           <input type="date" className="control-input" value={dateTo} onChange={e => setDateTo(e.target.value)} />
           <input type="text" className="control-input" placeholder="Filter..." value={campaignFilter} onChange={e => setCampaignFilter(e.target.value)} style={{ width: '80px' }} />
+          <button className="btn" onClick={exportToExcel} disabled={posts.length === 0}><Download size={16} /> Export</button>
           <button className="btn" onClick={generateShareLink}><Share size={16} /> Share View</button>
           <button className="btn" onClick={() => setShowSettings(true)}><Settings size={16} /></button>
           <button className="btn" onClick={fetchData} disabled={loading} style={{ background: 'var(--bf-green)', color: '#fff', border: 'none' }}><RefreshCw size={16} className={loading ? 'spinner' : ''} /> {loading ? 'Fetching...' : 'Refresh'}</button>
