@@ -4,5 +4,5 @@ import react from '@vitejs/plugin-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
-  base: '/marketing-dashboard-bf/', // Must match the GitHub repo name for GitHub Pages
+  base: '/bf/', // Configured for /bf/ subfolder deployment on Websupport
 })
