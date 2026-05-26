@@ -23,6 +23,53 @@ const formatMetricValue = (value, metricKey) => {
 };
 const formatAxisTick = (metricKey) => (v) => metricKey === 'spend' ? `€${Number(v).toFixed(2)}` : formatNumber(v);
 
+// Tooltip showing per-platform metric breakdown. Renders inside an element with .platform-hover.
+const PlatformTooltip = ({ platforms }) => {
+   const order = ['facebook', 'instagram'].filter(p => platforms?.[p]);
+   if (order.length === 0) return null;
+   const labels = { facebook: 'Facebook', instagram: 'Instagram' };
+   const dots = { facebook: 'fb', instagram: 'ig' };
+   return (
+      <div className="platform-tooltip">
+         {order.map(plat => {
+            const m = platforms[plat];
+            return (
+               <div key={plat} className="platform-block">
+                  <h4><span className={`dot ${dots[plat]}`}></span>{labels[plat]}</h4>
+                  <div className="row"><span>Spend</span><span>€{m.spend.toFixed(2)}</span></div>
+                  <div className="row"><span>Impressions</span><span>{m.impressions.toLocaleString()}</span></div>
+                  <div className="row"><span>Reach</span><span>{m.reach.toLocaleString()}</span></div>
+                  <div className="row"><span>Engagements</span><span>{m.engagements.toLocaleString()}</span></div>
+                  <div className="row"><span>Clicks</span><span>{m.clicks.toLocaleString()}</span></div>
+                  <div className="row"><span>ThruPlays</span><span>{m.thruPlays.toLocaleString()}</span></div>
+                  <div className="row"><span>Followers</span><span>{m.followers.toLocaleString()}</span></div>
+               </div>
+            );
+         })}
+      </div>
+   );
+};
+
+// Per-post platform badge(s). Shows one badge per platform the ad actually delivered on.
+const PlatformBadges = ({ networks, variant = 'card' }) => {
+   const list = networks && networks.length > 0 ? networks : [];
+   const labelMap = { facebook: 'Facebook', instagram: 'Instagram' };
+   const shortMap = { facebook: 'FB', instagram: 'IG' };
+   const cls = { facebook: 'fb', instagram: 'ig' };
+   if (variant === 'mini') {
+      return (
+         <div className="platform-badges-inline">
+            {list.map(n => <span key={n} className={`platform-badge-mini ${cls[n]}`}>{shortMap[n]}</span>)}
+         </div>
+      );
+   }
+   return (
+      <div className="platform-badges">
+         {list.map(n => <span key={n} className={`platform-badge ${cls[n]}`}>{labelMap[n]}</span>)}
+      </div>
+   );
+};
+
 const App = () => {
   const [account, setAccount] = useState('bf'); // 'bf' or 'rio' (rio is locked for now)
   const [dateFrom, setDateFrom] = useState('');
@@ -136,15 +183,38 @@ const App = () => {
   };
 
   const fetchAccountData = async (accountId, API_TOKEN, accountTag) => {
-      const insightsResponse = await axios.get(`https://graph.facebook.com/v25.0/${accountId}/insights`, {
-        params: {
-          access_token: API_TOKEN, level: 'ad', time_range: JSON.stringify({ since: dateFrom, until: dateTo }),
-          limit: 150, fields: 'ad_id,ad_name,campaign_name,spend,impressions,reach,inline_link_clicks,actions,video_play_actions'
-        }
-      });
+      const baseFields = 'ad_id,ad_name,campaign_name,spend,impressions,reach,inline_link_clicks,actions,video_play_actions';
+      const timeRange = JSON.stringify({ since: dateFrom, until: dateTo });
+
+      const [insightsResponse, platformResponse] = await Promise.all([
+        axios.get(`https://graph.facebook.com/v25.0/${accountId}/insights`, {
+          params: { access_token: API_TOKEN, level: 'ad', time_range: timeRange, limit: 150, fields: baseFields }
+        }),
+        axios.get(`https://graph.facebook.com/v25.0/${accountId}/insights`, {
+          params: { access_token: API_TOKEN, level: 'ad', time_range: timeRange, limit: 500, fields: baseFields, breakdowns: 'publisher_platform' }
+        }),
+      ]);
 
       const insightsData = insightsResponse.data.data;
       if (!insightsData || insightsData.length === 0) return { posts: [], kpis: { spend: 0, impressions: 0, reach: 0, thruPlays: 0, engagements: 0, linkClicks: 0, followers: 0 } };
+
+      // Build a per-ad map of platform breakdowns
+      const getAct = (actions, type) => { const a = (actions || []).find(x => x.action_type === type); return a ? parseInt(a.value) : 0; };
+      const platformByAd = {};
+      (platformResponse.data.data || []).forEach(row => {
+          const platform = row.publisher_platform;
+          if (platform !== 'facebook' && platform !== 'instagram') return;
+          if (!platformByAd[row.ad_id]) platformByAd[row.ad_id] = {};
+          platformByAd[row.ad_id][platform] = {
+              spend: parseFloat(row.spend || 0),
+              impressions: parseInt(row.impressions || 0),
+              reach: parseInt(row.reach || 0),
+              clicks: parseInt(row.inline_link_clicks || 0),
+              engagements: getAct(row.actions, 'post_engagement'),
+              thruPlays: getAct(row.actions, 'video_view'),
+              followers: getAct(row.actions, 'like'),
+          };
+      });
 
       const filteredInsights = insightsData.filter(ins => {
         if (!campaignFilter) return true;
@@ -175,6 +245,13 @@ const App = () => {
         const postEngagement = getAction(ins.actions, 'post_engagement'); const thruPlays = getAction(ins.actions, 'video_view');
         const followers = getAction(ins.actions, 'like');
 
+        // Per-platform breakdown (from publisher_platform breakdown call)
+        const adPlatforms = platformByAd[ins.ad_id] || {};
+        const platforms = {};
+        if (adPlatforms.facebook && adPlatforms.facebook.spend + adPlatforms.facebook.impressions > 0) platforms.facebook = adPlatforms.facebook;
+        if (adPlatforms.instagram && adPlatforms.instagram.spend + adPlatforms.instagram.impressions > 0) platforms.instagram = adPlatforms.instagram;
+        const networks = Object.keys(platforms); // ['facebook','instagram'] | ['facebook'] | ['instagram'] | []
+
         subKpis.spend += spend; subKpis.impressions += impressions; subKpis.reach += reach;
         subKpis.linkClicks += linkClicks; subKpis.engagements += postEngagement; subKpis.thruPlays += thruPlays; subKpis.followers += followers;
 
@@ -197,9 +274,15 @@ const App = () => {
         }
         const bestImageUrl = hdImage || creative.thumbnail_url || 'https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?q=80&w=600&auto=format&fit=crop';
 
+        // Legacy single network (fallback when breakdown gave no data)
+        const fallbackNetwork = (creative.source_instagram_media_id || (ins.campaign_name || '').toLowerCase().includes('instagram')) ? 'ig' : 'fb';
+        const finalNetworks = networks.length > 0 ? networks : [fallbackNetwork === 'ig' ? 'instagram' : 'facebook'];
+
         return {
             id: ins.ad_id, monthKey, monthLabel, accountTag,
-            network: (creative.source_instagram_media_id || (ins.campaign_name || '').toLowerCase().includes('instagram')) ? 'ig' : 'fb',
+            network: networks.length === 1 ? (networks[0] === 'instagram' ? 'ig' : 'fb') : (networks.length === 2 ? 'both' : fallbackNetwork),
+            networks: finalNetworks, // ['facebook','instagram'] | ['facebook'] | ['instagram']
+            platforms,
             text: creative.body || ins.ad_name,
             imageUrl: bestImageUrl,
             metrics: { spend, impressions, reach, engagements: postEngagement, clicks: linkClicks, thruPlays, followers }
@@ -334,6 +417,38 @@ const App = () => {
       ];
       XLSX.utils.book_append_sheet(wb, monthlySheet, 'Monthly Breakdown');
 
+      // --- Sheet 4: Platform Breakdown (one row per ad × platform) ---
+      const platformRows = [];
+      posts.forEach(p => {
+          if (!p.platforms) return;
+          ['facebook', 'instagram'].forEach(plat => {
+              const m = p.platforms[plat];
+              if (!m) return;
+              platformRows.push({
+                  Platform: plat === 'facebook' ? 'Facebook' : 'Instagram',
+                  Category: tags[p.id] || 'Uncategorized',
+                  Month: p.monthLabel,
+                  Text: p.text,
+                  'Spend (€)': Number(m.spend.toFixed(2)),
+                  Impressions: m.impressions,
+                  Reach: m.reach,
+                  Engagements: m.engagements,
+                  Clicks: m.clicks,
+                  ThruPlays: m.thruPlays,
+                  Followers: m.followers,
+              });
+          });
+      });
+      if (platformRows.length > 0) {
+          const platSheet = XLSX.utils.json_to_sheet(platformRows);
+          platSheet['!cols'] = [
+              { wch: 11 }, { wch: 18 }, { wch: 11 }, { wch: 60 },
+              { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 },
+              { wch: 9 }, { wch: 10 }, { wch: 10 },
+          ];
+          XLSX.utils.book_append_sheet(wb, platSheet, 'Platform Breakdown');
+      }
+
       const accountTag = account === 'bf' ? 'bf' : 'rio';
       const filename = `${accountTag}-marketing-report_${dateFrom}_to_${dateTo}.xlsx`;
       XLSX.writeFile(wb, filename);
@@ -460,7 +575,7 @@ const App = () => {
             <div className="posts-grid">
               {posts.map(post => (
                 <div key={post.id} className="post-card">
-                  <div className="post-visual">
+                  <div className="post-visual platform-hover">
                     {apiKeys.supabaseUrl && (
                       <select className="tag-selector" value={tags[post.id] || ''} onChange={(e) => assignTag(post.id, e.target.value)}>
                         <option value="">⚙️ Uncategorized</option>
@@ -468,9 +583,8 @@ const App = () => {
                       </select>
                     )}
                     <img src={post.imageUrl} alt="Creative" onError={(e) => { e.target.onerror = null; e.target.src = 'https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?q=80&w=600&auto=format&fit=crop'; }}/>
-                    <div className="post-network-icon" style={{ background: post.network === 'ig' ? 'linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)' : '#1877F2', width: 'auto', padding: '6px 12px', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '6px', top: '12px', right: '12px' }}>
-                      <span style={{color: '#fff', fontSize: '11px', fontWeight: '700'}}>{post.network === 'ig' ? 'Instagram' : 'Facebook'}</span>
-                    </div>
+                    <PlatformBadges networks={post.networks} variant="card" />
+                    {post.platforms && Object.keys(post.platforms).length > 0 && <PlatformTooltip platforms={post.platforms} />}
                   </div>
                   <div className="post-content">
                     <div className="post-text">{post.text}</div>
@@ -524,8 +638,9 @@ const App = () => {
                                   <td key={mk} className="matrix-cell">
                                     {boxPosts.length === 0 && <div style={{opacity:0.2, textAlign:'center', marginTop:'16px'}}>Empty</div>}
                                     {boxPosts.map(p => (
-                                       <div key={p.id} className="matrix-mini-post">
-                                          <div className="m-post-net" style={{background: p.network==='ig'?'linear-gradient(45deg, #f09433, #bc1888)':'#1877F2'}}>{p.network==='ig'?'IG':'FB'}</div>
+                                       <div key={p.id} className="matrix-mini-post platform-hover">
+                                          <PlatformBadges networks={p.networks} variant="mini" />
+                                          {p.platforms && Object.keys(p.platforms).length > 0 && <PlatformTooltip platforms={p.platforms} />}
                                           <img src={p.imageUrl} onError={(e) => { e.target.onerror = null; e.target.src = 'https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?q=80&w=600&auto=format&fit=crop'; }} />
                                           <div className="m-data">
                                              <div title={p.text} style={{fontWeight:700, fontSize:'12px', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', marginBottom:'6px', color:'var(--text-primary)'}}>{p.text}</div>
